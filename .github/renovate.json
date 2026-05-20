@@ -16,6 +16,8 @@
   "internalChecksFilter": "strict",
   "configMigration": true,
 
+  "pinDigests": true,
+
   "prConcurrentLimit": 5,
   "prHourlyLimit": 2,
   "rebaseWhen": "behind-base-branch",
@@ -31,10 +33,11 @@
 
   "packageRules": [
     {
-      "description": "Group GitHub Actions updates so we get one PR per cycle, not N.",
+      "description": "Group GitHub Actions updates so we get one PR per cycle, not N. Keep the SHA pinned but update the trailing `# v5` comment so Renovate knows which release the SHA represents.",
       "matchManagers": ["github-actions"],
       "groupName": "github-actions",
-      "addLabels": ["github-actions"]
+      "addLabels": ["github-actions"],
+      "pinDigests": true
     },
     {
       "description": "Pinned shell tools (actionlint, etc.) via custom regex managers.",

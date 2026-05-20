@@ -299,7 +299,7 @@ jobs:
 
       - name: Set up Cloudflare Tunnel SSH (tunnel-ssh mode)
         if: inputs.source-mode == 'tunnel-ssh'
-        uses: NX1X/cloudflare-tunnel-ssh-action@v1
+        uses: NX1X/cloudflare-tunnel-ssh-action@5b09bfc4ba3dc20b3d77d96271fff5a20fe64107 # v1
         with:
           cf-access-client-id:     ${{ secrets.CF_ACCESS_CLIENT_ID }}
           cf-access-client-secret: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
@@ -310,7 +310,7 @@ jobs:
 
       - name: Fetch templates (db-template mode)
         if: inputs.db-template != ''
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           repository: NX1X/Cloudflare-R2-backup-action
           ref: v1
@@ -425,7 +425,7 @@ jobs:
 
       - name: Upload to R2
         id: r2-upload
-        uses: NX1X/Cloudflare-R2-backup-action@v1
+        uses: NX1X/Cloudflare-R2-backup-action@05b470a55ba3b008e7405fdc7f0f2208b0b3e488 # v1
         with:
           operation:         upload
           account-id:        ${{ secrets.R2_ACCOUNT_ID }}
@@ -460,7 +460,7 @@ jobs:
     steps:
       - name: Verify
         id: r2-verify
-        uses: NX1X/Cloudflare-R2-backup-action@v1
+        uses: NX1X/Cloudflare-R2-backup-action@05b470a55ba3b008e7405fdc7f0f2208b0b3e488 # v1
         with:
           operation:         verify
           account-id:        ${{ secrets.R2_ACCOUNT_ID }}
@@ -479,7 +479,7 @@ jobs:
 
     steps:
       - name: Fetch notify script
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           repository: NX1X/Cloudflare-R2-backup-action
           ref: v1
