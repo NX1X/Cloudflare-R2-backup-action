@@ -6,15 +6,28 @@ name: Release
 # What this workflow does:
 #   1. Validates the version input format
 #   2. Runs lint + validation checks (same as CI)
-#   3. Extracts release notes from CHANGELOG.md
-#   4. Creates a git tag and GitHub Release
-#   5. Updates the floating major version tag (v1 - latest v1.x.x)
+#   3. Verifies Marketplace prerequisites (action.yml branding, required fields)
+#   4. Extracts release notes from CHANGELOG.md
+#   5. Creates a git tag and GitHub Release
+#   6. Updates the floating major version tag (v1 - latest v1.x.x)
 #      so users who pin to @v1 automatically get patch/minor updates.
 #
 # How to release:
 #   1. Update CHANGELOG.md - add a [X.Y.Z] section with the release date
 #   2. Go to Actions - Release - Run workflow
 #   3. Enter the version (e.g. 1.0.1)
+#
+# GitHub Marketplace publishing:
+#   The "Publish this Action to the GitHub Marketplace" checkbox is NOT
+#   exposed by the GitHub REST API, so this workflow cannot tick it. The
+#   FIRST release must be published to the Marketplace manually:
+#     1. Run this workflow to create the initial release
+#     2. Open the new release at github.com/NX1X/Cloudflare-R2-backup-action/releases
+#     3. Click "Edit", tick "Publish this Action to the GitHub Marketplace"
+#     4. Accept the Marketplace Developer Agreement (one-time)
+#     5. Pick a primary + secondary category, then "Update release"
+#   Once the listing exists, every release created by this workflow appears
+#   automatically as a new version on the Marketplace page.
 # =============================================================================
 
 on:
@@ -73,6 +86,12 @@ jobs:
           for field in name description author runs; do
             grep -q "^${field}:" action.yml || { echo "action.yml missing field: ${field}"; exit 1; }
           done
+
+          # Marketplace prerequisites: branding block with icon + color
+          grep -q "^branding:" action.yml || { echo "action.yml missing 'branding:' block (required for GitHub Marketplace)"; exit 1; }
+          grep -qE "^[[:space:]]+icon:[[:space:]]+['\"]?[a-z-]+" action.yml || { echo "action.yml branding missing 'icon:' (required for GitHub Marketplace)"; exit 1; }
+          grep -qE "^[[:space:]]+color:[[:space:]]+['\"]?[a-z-]+" action.yml || { echo "action.yml branding missing 'color:' (required for GitHub Marketplace)"; exit 1; }
+
           echo "Validation passed."
 
       - name: Run unit tests

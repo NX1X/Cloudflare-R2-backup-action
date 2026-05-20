@@ -8,6 +8,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `assets/social-preview.svg` and `assets/social-preview.png` - 1280x640 social preview image for the repository's Settings - Social preview field
+- Release workflow validates the `branding:` block in `action.yml` (icon + color) as a GitHub Marketplace prerequisite, with header docs explaining the one-time UI step required to publish the listing
+
 ---
 
 ## [1.0.0] - 2026-05-20
