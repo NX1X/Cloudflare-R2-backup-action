@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Mock `curl` for unit tests. Logs every invocation and captures the --data
+# payload so tests can inspect what would have been sent to the webhook.
+#
+#   R2_MOCK_LOG          - file to append the full argv to (one line per call)
+#   R2_MOCK_CURL_PAYLOAD - file to write the --data value to (raw, no newline)
+#   R2_MOCK_CURL_CODE    - HTTP status code to emit via --write-out (default 200)
+#   R2_MOCK_CURL_FAIL    - if "1", exit 7 (connection refused) with no stdout
+
+set -uo pipefail
+
+LOG="${R2_MOCK_LOG:-/dev/null}"
+{ printf 'curl'; for a in "$@"; do printf ' %q' "$a"; done; printf '\n'; } >> "$LOG"
+
+# Extract --data value (the JSON payload).
+data=""
+write_out=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --data|--data-raw|-d) data="${2:-}"; shift 2 ;;
+    --write-out|-w)       write_out="${2:-}"; shift 2 ;;
+    --data=*)             data="${1#--data=}"; shift ;;
+    *)                    shift ;;
+  esac
+done
+
+if [ -n "${R2_MOCK_CURL_PAYLOAD:-}" ]; then
+  printf '%s' "$data" > "${R2_MOCK_CURL_PAYLOAD}"
+fi
+
+if [ "${R2_MOCK_CURL_FAIL:-0}" = "1" ]; then
+  exit 7
+fi
+
+# If the caller asked for %{http_code}, emit the configured code.
+case "$write_out" in
+  *"%{http_code}"*) printf '%s' "${R2_MOCK_CURL_CODE:-200}" ;;
+esac
+exit 0

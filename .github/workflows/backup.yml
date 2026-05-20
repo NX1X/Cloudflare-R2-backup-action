@@ -1,0 +1,506 @@
+name: R2 Backup (reusable)
+
+# Reusable workflow that orchestrates the full backup pipeline:
+#
+#   create archive  ->  upload to R2 (+ retention)  ->  optional integrity verify
+#
+# Source modes:
+#   local       - runs the user-supplied backup-script on the GitHub runner
+#   ssh         - runs the script on a remote server reached over plain SSH,
+#                 then SCPs the archive back to the runner
+#   tunnel-ssh  - same as ssh, but reaches the server through a Cloudflare
+#                 Tunnel via NX1X/cloudflare-tunnel-ssh-action. The remote
+#                 server need not be publicly reachable.
+
+on:
+  workflow_call:
+    inputs:
+      source-mode:
+        description: 'Where the backup runs: local | ssh | tunnel-ssh'
+        required: true
+        type: string
+
+      backup-script:
+        description: |
+          Shell commands that produce the archive. The LAST line written to
+          stdout must be the absolute path to the archive file. Send any
+          progress/log output to stderr (e.g. `echo "Dumping..." >&2`).
+          Either backup-script OR db-template must be set (not both).
+        required: false
+        type: string
+        default: ''
+
+      # Database templates (alternative to backup-script)
+      db-template:
+        description: |
+          Built-in dump recipe to use instead of a custom backup-script:
+          mysql | postgres | mongodb | sqlite. Provide db-* inputs alongside.
+        required: false
+        type: string
+        default: ''
+      db-host:
+        description: 'Database host (default depends on engine - usually localhost).'
+        required: false
+        type: string
+        default: ''
+      db-port:
+        description: 'Database port (default depends on engine: 3306, 5432, 27017).'
+        required: false
+        type: string
+        default: ''
+      db-user:
+        description: 'Database username.'
+        required: false
+        type: string
+        default: ''
+      db-name:
+        description: 'Database name. Empty = dump all (mysql/postgres) or all DBs (mongodb).'
+        required: false
+        type: string
+        default: ''
+      db-path:
+        description: '(sqlite only) Absolute path to the .db / .sqlite file.'
+        required: false
+        type: string
+        default: ''
+      db-auth-db:
+        description: '(mongodb only) Authentication database. Default: admin.'
+        required: false
+        type: string
+        default: ''
+      db-dump-binary:
+        description: 'Override the dump binary (e.g. mariadb-dump for MariaDB instead of mysqldump).'
+        required: false
+        type: string
+        default: ''
+      db-docker-compose-service:
+        description: 'If set, runs the dump inside `docker compose exec -T <service>`.'
+        required: false
+        type: string
+        default: ''
+      db-docker-compose-dir:
+        description: 'Working directory for docker compose (default: current dir on the source).'
+        required: false
+        type: string
+        default: ''
+
+      # Archive shaping
+      archive-name-prefix:
+        description: 'Prefix for the archive filename (default: "backup", giving e.g. backup_20260509_021500.tar.gz).'
+        required: false
+        type: string
+        default: ''
+      archive-path:
+        description: 'Directory on the source where the archive is staged before upload (default: $HOME/backups).'
+        required: false
+        type: string
+        default: ''
+      extra-paths:
+        description: |
+          Additional file or directory paths on the source to include in the
+          archive alongside the database dump. Newline-separated. Each entry
+          is added as `-C dirname basename` so basenames sit at the archive root.
+        required: false
+        type: string
+        default: ''
+
+      # SSH inputs (used by ssh and tunnel-ssh modes)
+      ssh-host:
+        description: |
+          Hostname of the remote source.
+          For tunnel-ssh: the hostname routed through the Cloudflare Tunnel.
+        required: false
+        type: string
+        default: ''
+      ssh-user:
+        description: 'SSH username on the remote server.'
+        required: false
+        type: string
+        default: ''
+      ssh-port:
+        description: 'SSH port (ssh mode only - tunnel-ssh always uses 22 internally).'
+        required: false
+        type: string
+        default: '22'
+      ssh-known-hosts:
+        description: |
+          (ssh mode only) Optional known_hosts entry for the remote host.
+          Recommended for production. If empty, host key checking is disabled (TOFU).
+          Not used in tunnel-ssh mode - Cloudflare Access provides authentication.
+        required: false
+        type: string
+        default: ''
+
+      # tunnel-ssh inputs
+      cloudflared-version:
+        description: '(tunnel-ssh mode) cloudflared version to install. "latest" or e.g. "2025.4.0".'
+        required: false
+        type: string
+        default: 'latest'
+
+      # R2 sink config
+      bucket:
+        description: 'R2 bucket name'
+        required: true
+        type: string
+      prefix:
+        description: 'Path prefix inside the bucket (e.g. daily-backups/)'
+        required: false
+        type: string
+        default: ''
+      object-key:
+        description: 'Explicit object key override. Defaults to prefix + basename(archive).'
+        required: false
+        type: string
+        default: ''
+      retention-days:
+        description: 'Delete objects under prefix older than N days.'
+        required: false
+        type: string
+        default: ''
+      retention-count:
+        description: 'Keep only the newest N objects under prefix.'
+        required: false
+        type: string
+        default: ''
+
+      # Verification
+      verify-after-upload:
+        description: 'Run an integrity check on the uploaded object before completing.'
+        required: false
+        type: boolean
+        default: false
+      verify-mode:
+        description: 'Integrity check type when verify-after-upload=true: tar | zip | sha256'
+        required: false
+        type: string
+        default: 'tar'
+
+      cleanup-source:
+        description: 'For ssh mode: delete the archive on the remote source after upload.'
+        required: false
+        type: boolean
+        default: true
+
+      # Notifications
+      notify-webhook-format:
+        description: 'Webhook payload schema: slack | discord | generic'
+        required: false
+        type: string
+        default: 'generic'
+      notify-on-success:
+        description: 'Post a notification when the backup succeeds.'
+        required: false
+        type: boolean
+        default: false
+      notify-on-failure:
+        description: 'Post a notification when the backup or verify fails.'
+        required: false
+        type: boolean
+        default: true
+
+    secrets:
+      R2_ACCOUNT_ID:
+        required: true
+      R2_ACCESS_KEY_ID:
+        required: true
+      R2_SECRET_ACCESS_KEY:
+        required: true
+      SSH_PRIVATE_KEY:
+        description: 'Required for ssh and tunnel-ssh modes.'
+        required: false
+      CF_ACCESS_CLIENT_ID:
+        description: 'Cloudflare Access service token ID (tunnel-ssh mode).'
+        required: false
+      CF_ACCESS_CLIENT_SECRET:
+        description: 'Cloudflare Access service token secret (tunnel-ssh mode).'
+        required: false
+      DB_PASSWORD:
+        description: 'Database password (used by mysql/postgres/mongodb templates).'
+        required: false
+      NOTIFY_WEBHOOK_URL:
+        description: 'Webhook URL for backup notifications (Slack/Discord/generic). If unset, notifications are disabled.'
+        required: false
+
+    outputs:
+      object-key:
+        description: 'Full object key written to R2.'
+        value: ${{ jobs.backup.outputs.object-key }}
+      size:
+        description: 'Size in bytes of the uploaded object.'
+        value: ${{ jobs.backup.outputs.size }}
+      pruned-count:
+        description: 'Objects deleted by retention.'
+        value: ${{ jobs.backup.outputs.pruned-count }}
+      verified:
+        description: 'true if integrity check passed; "skipped" if verify-after-upload was false.'
+        value: ${{ jobs.verify.outputs.verified || 'skipped' }}
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    name: Create archive and upload to R2
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      object-key:   ${{ steps.r2-upload.outputs.object-key }}
+      size:         ${{ steps.r2-upload.outputs.size }}
+      pruned-count: ${{ steps.r2-upload.outputs.pruned-count }}
+      remote-archive: ${{ steps.archive.outputs.remote-path }}
+
+    steps:
+      - name: Validate source-mode
+        env:
+          MODE: ${{ inputs.source-mode }}
+        run: |
+          case "$MODE" in
+            local|ssh|tunnel-ssh) ;;
+            *) echo "::error::source-mode must be 'local', 'ssh', or 'tunnel-ssh' (got '$MODE')"; exit 1 ;;
+          esac
+
+      - name: Set up SSH (ssh mode)
+        if: inputs.source-mode == 'ssh'
+        env:
+          SSH_PRIVATE_KEY:  ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST:         ${{ inputs.ssh-host }}
+          SSH_KNOWN_HOSTS:  ${{ inputs.ssh-known-hosts }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SSH_PRIVATE_KEY" ]; then
+            echo "::error::ssh mode requires the SSH_PRIVATE_KEY secret"
+            exit 1
+          fi
+          if [ -z "$SSH_HOST" ]; then
+            echo "::error::ssh mode requires the ssh-host input"
+            exit 1
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+          if [ -n "$SSH_KNOWN_HOSTS" ]; then
+            printf '%s\n' "$SSH_KNOWN_HOSTS" >> ~/.ssh/known_hosts
+            chmod 600 ~/.ssh/known_hosts
+            cat > ~/.ssh/config <<EOF
+          Host $SSH_HOST
+            UserKnownHostsFile ~/.ssh/known_hosts
+          EOF
+          else
+            echo "::warning::ssh-known-hosts not set - using TOFU (StrictHostKeyChecking=no). Set ssh-known-hosts for production."
+            cat > ~/.ssh/config <<EOF
+          Host $SSH_HOST
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+          EOF
+          fi
+          chmod 600 ~/.ssh/config
+
+      - name: Set up Cloudflare Tunnel SSH (tunnel-ssh mode)
+        if: inputs.source-mode == 'tunnel-ssh'
+        uses: NX1X/cloudflare-tunnel-ssh-action@v1
+        with:
+          cf-access-client-id:     ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          cf-access-client-secret: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          ssh-private-key:         ${{ secrets.SSH_PRIVATE_KEY }}
+          ssh-host:                ${{ inputs.ssh-host }}
+          ssh-user:                ${{ inputs.ssh-user }}
+          cloudflared-version:     ${{ inputs.cloudflared-version }}
+
+      - name: Fetch templates (db-template mode)
+        if: inputs.db-template != ''
+        uses: actions/checkout@v5
+        with:
+          repository: NX1X/Cloudflare-R2-backup-action
+          ref: v1
+          sparse-checkout: templates
+          path: .r2-backup-action
+
+      - name: Prepare backup script
+        id: prepare
+        env:
+          DB_TEMPLATE:    ${{ inputs.db-template }}
+          BACKUP_SCRIPT:  ${{ inputs.backup-script }}
+          DB_HOST:        ${{ inputs.db-host }}
+          DB_PORT:        ${{ inputs.db-port }}
+          DB_USER:        ${{ inputs.db-user }}
+          DB_NAME:        ${{ inputs.db-name }}
+          DB_PATH:        ${{ inputs.db-path }}
+          DB_AUTH_DB:     ${{ inputs.db-auth-db }}
+          DB_PASSWORD:    ${{ secrets.DB_PASSWORD }}
+          DUMP_BIN:                 ${{ inputs.db-dump-binary }}
+          DOCKER_COMPOSE_SERVICE:   ${{ inputs.db-docker-compose-service }}
+          DOCKER_COMPOSE_DIR:       ${{ inputs.db-docker-compose-dir }}
+          ARCHIVE_PATH:             ${{ inputs.archive-path }}
+          ARCHIVE_NAME_PREFIX:      ${{ inputs.archive-name-prefix }}
+          EXTRA_PATHS:              ${{ inputs.extra-paths }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "$DB_TEMPLATE" ] && [ -n "$BACKUP_SCRIPT" ]; then
+            echo "::error::Provide either db-template OR backup-script, not both"
+            exit 1
+          fi
+          if [ -z "$DB_TEMPLATE" ] && [ -z "$BACKUP_SCRIPT" ]; then
+            echo "::error::Either db-template or backup-script must be set"
+            exit 1
+          fi
+
+          SCRIPT_FILE="$RUNNER_TEMP/r2-backup-script.sh"
+
+          if [ -n "$DB_TEMPLATE" ]; then
+            TPL_FILE=".r2-backup-action/templates/${DB_TEMPLATE}.sh"
+            if [ ! -f "$TPL_FILE" ]; then
+              echo "::error::Unknown db-template: '${DB_TEMPLATE}' - supported: mysql, postgres, mongodb, sqlite"
+              exit 1
+            fi
+
+            # Build env-var prelude. printf %q safely quotes values containing
+            # spaces, special chars, etc. - the values land in the script body
+            # so they reach the source (local OR remote via ssh).
+            {
+              echo "#!/usr/bin/env bash"
+              for var in DB_HOST DB_PORT DB_USER DB_NAME DB_PATH DB_AUTH_DB \
+                         DB_PASSWORD DUMP_BIN \
+                         DOCKER_COMPOSE_SERVICE DOCKER_COMPOSE_DIR \
+                         ARCHIVE_PATH ARCHIVE_NAME_PREFIX EXTRA_PATHS; do
+                val="${!var:-}"
+                printf 'export %s=%q\n' "$var" "$val"
+              done
+              echo
+              cat "$TPL_FILE"
+            } > "$SCRIPT_FILE"
+          else
+            printf '%s\n' "$BACKUP_SCRIPT" > "$SCRIPT_FILE"
+          fi
+
+          chmod +x "$SCRIPT_FILE"
+          echo "script-path=$SCRIPT_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Create archive
+        id: archive
+        env:
+          MODE:        ${{ inputs.source-mode }}
+          SCRIPT_PATH: ${{ steps.prepare.outputs.script-path }}
+          SSH_HOST:    ${{ inputs.ssh-host }}
+          SSH_USER:    ${{ inputs.ssh-user }}
+          SSH_PORT:    ${{ inputs.ssh-port }}
+        run: |
+          set -euo pipefail
+
+          run_local()  { bash "$SCRIPT_PATH"; }
+          run_remote() { ssh -p "$SSH_PORT" "${SSH_USER}@${SSH_HOST}" 'bash -s' < "$SCRIPT_PATH"; }
+
+          OUT_FILE=$(mktemp)
+          if [ "$MODE" = "local" ]; then
+            run_local | tee "$OUT_FILE"
+          else
+            run_remote | tee "$OUT_FILE"
+          fi
+
+          # Last non-empty line of stdout = path to archive (per our contract).
+          ARCHIVE_PATH=$(grep -v '^[[:space:]]*$' "$OUT_FILE" | tail -n 1)
+          rm -f "$OUT_FILE"
+          if [ -z "$ARCHIVE_PATH" ]; then
+            echo "::error::backup-script produced no output - last stdout line must be the archive path"
+            exit 1
+          fi
+          echo "Backup script reports archive at: $ARCHIVE_PATH"
+
+          if [ "$MODE" = "local" ]; then
+            if [ ! -f "$ARCHIVE_PATH" ]; then
+              echo "::error::archive not found at: $ARCHIVE_PATH"
+              exit 1
+            fi
+            echo "local-path=$ARCHIVE_PATH"  >> "$GITHUB_OUTPUT"
+            echo "remote-path="              >> "$GITHUB_OUTPUT"
+          else
+            # ssh or tunnel-ssh: SCP the archive back from the remote source
+            LOCAL_PATH="./$(basename "$ARCHIVE_PATH")"
+            scp -P "$SSH_PORT" "${SSH_USER}@${SSH_HOST}:${ARCHIVE_PATH}" "$LOCAL_PATH"
+            echo "local-path=$LOCAL_PATH"   >> "$GITHUB_OUTPUT"
+            echo "remote-path=$ARCHIVE_PATH" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload to R2
+        id: r2-upload
+        uses: NX1X/Cloudflare-R2-backup-action@v1
+        with:
+          operation:         upload
+          account-id:        ${{ secrets.R2_ACCOUNT_ID }}
+          access-key-id:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          bucket:            ${{ inputs.bucket }}
+          prefix:            ${{ inputs.prefix }}
+          object-key:        ${{ inputs.object-key }}
+          file:              ${{ steps.archive.outputs.local-path }}
+          retention-days:    ${{ inputs.retention-days }}
+          retention-count:   ${{ inputs.retention-count }}
+
+      - name: Cleanup remote archive (ssh / tunnel-ssh modes)
+        if: ${{ (inputs.source-mode == 'ssh' || inputs.source-mode == 'tunnel-ssh') && inputs.cleanup-source && steps.archive.outputs.remote-path != '' }}
+        env:
+          SSH_HOST:       ${{ inputs.ssh-host }}
+          SSH_USER:       ${{ inputs.ssh-user }}
+          SSH_PORT:       ${{ inputs.ssh-port }}
+          REMOTE_ARCHIVE: ${{ steps.archive.outputs.remote-path }}
+        run: |
+          ssh -p "$SSH_PORT" "${SSH_USER}@${SSH_HOST}" "rm -f -- '$REMOTE_ARCHIVE'"
+
+  verify:
+    name: Verify upload integrity
+    needs: backup
+    if: ${{ inputs.verify-after-upload }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      verified: ${{ steps.r2-verify.outputs.verified }}
+
+    steps:
+      - name: Verify
+        id: r2-verify
+        uses: NX1X/Cloudflare-R2-backup-action@v1
+        with:
+          operation:         verify
+          account-id:        ${{ secrets.R2_ACCOUNT_ID }}
+          access-key-id:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          bucket:            ${{ inputs.bucket }}
+          object-key:        ${{ needs.backup.outputs.object-key }}
+          verify-mode:       ${{ inputs.verify-mode }}
+
+  notify:
+    name: Send notification
+    needs: [backup, verify]
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Fetch notify script
+        uses: actions/checkout@v5
+        with:
+          repository: NX1X/Cloudflare-R2-backup-action
+          ref: v1
+          sparse-checkout: scripts
+          path: .r2-backup-action
+
+      - name: Send notification
+        env:
+          NOTIFY_WEBHOOK_URL:  ${{ secrets.NOTIFY_WEBHOOK_URL }}
+          NOTIFY_FORMAT:       ${{ inputs.notify-webhook-format }}
+          NOTIFY_ON_SUCCESS:   ${{ inputs.notify-on-success }}
+          NOTIFY_ON_FAILURE:   ${{ inputs.notify-on-failure }}
+          BACKUP_RESULT:       ${{ needs.backup.result }}
+          VERIFY_RESULT:       ${{ needs.verify.result }}
+          NOTIFY_REPOSITORY:   ${{ github.repository }}
+          NOTIFY_WORKFLOW:     ${{ github.workflow }}
+          NOTIFY_REF:          ${{ github.ref }}
+          NOTIFY_RUN_URL:      ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          NOTIFY_BUCKET:       ${{ inputs.bucket }}
+          NOTIFY_OBJECT_KEY:   ${{ needs.backup.outputs.object-key }}
+          NOTIFY_SIZE:         ${{ needs.backup.outputs.size }}
+          NOTIFY_PRUNED_COUNT: ${{ needs.backup.outputs.pruned-count }}
+          NOTIFY_VERIFIED:     ${{ needs.verify.outputs.verified || 'skipped' }}
+        run: bash .r2-backup-action/scripts/notify.sh

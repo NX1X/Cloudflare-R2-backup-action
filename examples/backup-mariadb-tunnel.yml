@@ -1,0 +1,57 @@
+name: Backup MariaDB to R2 (db-template + Cloudflare Tunnel)
+
+# Example: dump a MariaDB instance running inside docker compose on a server
+# behind a Cloudflare Tunnel, archive it together with the app's data dir,
+# upload to R2 with retention.
+#
+# Replaces the IvritPedia hand-rolled daily/weekly/monthly backup workflows
+# with a single 30-line caller per cadence.
+#
+# Required secrets:
+#   CF_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY  - R2 sink
+#   CF_ACCESS_CLIENT_ID, CF_ACCESS_CLIENT_SECRET           - Cloudflare Access service token
+#   SSH_PRIVATE_KEY                                        - Public key on server's authorized_keys
+#   DATABASE_ROOT_PASSWORD                                 - MariaDB root password
+#
+# Required vars:
+#   TUNNEL_HOSTNAME, SSH_USER, BACKUP_BUCKET, APP_DIR
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # 02:00 UTC daily
+  workflow_dispatch:
+
+jobs:
+  backup:
+    uses: NX1X/Cloudflare-R2-backup-action/.github/workflows/backup.yml@v1
+    with:
+      source-mode: tunnel-ssh
+      ssh-host:    ${{ vars.TUNNEL_HOSTNAME }}
+      ssh-user:    ${{ vars.SSH_USER }}
+
+      # Use the built-in MariaDB recipe instead of writing a backup-script
+      db-template:               mysql
+      db-dump-binary:            mariadb-dump
+      db-user:                   root
+      db-docker-compose-service: db
+      db-docker-compose-dir:     ${{ vars.APP_DIR }}
+
+      archive-name-prefix:       ivritpedia_daily_backup
+      extra-paths: |
+        ${{ vars.APP_DIR }}/data/mediawiki
+
+      bucket:           ${{ vars.BACKUP_BUCKET }}
+      prefix:           daily-backups/
+      retention-days:   '90'
+
+      verify-after-upload: true
+      verify-mode:         tar
+
+    secrets:
+      R2_ACCOUNT_ID:           ${{ secrets.CF_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID:        ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY:    ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      CF_ACCESS_CLIENT_ID:     ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+      SSH_PRIVATE_KEY:         ${{ secrets.SSH_PRIVATE_KEY }}
+      DB_PASSWORD:             ${{ secrets.DATABASE_ROOT_PASSWORD }}

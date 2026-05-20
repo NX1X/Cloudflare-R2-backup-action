@@ -1,0 +1,43 @@
+name: Backup PostgreSQL to R2 (db-template + plain SSH)
+
+# Example: dump a Postgres database running directly (not in docker) on a
+# server reachable over plain SSH, archive it with the app's uploads dir,
+# upload to R2.
+
+on:
+  schedule:
+    - cron: '0 3 * * *'   # 03:00 UTC daily
+  workflow_dispatch:
+
+jobs:
+  backup:
+    uses: NX1X/Cloudflare-R2-backup-action/.github/workflows/backup.yml@v1
+    with:
+      source-mode: ssh
+      ssh-host:        ${{ vars.SSH_HOST }}
+      ssh-user:        ${{ vars.SSH_USER }}
+      ssh-known-hosts: ${{ secrets.SSH_KNOWN_HOSTS }}
+
+      # Postgres dump recipe - empty db-name means pg_dumpall (every database)
+      db-template: postgres
+      db-host:     localhost
+      db-port:     '5432'
+      db-user:     postgres
+
+      archive-name-prefix: myapp_pg_daily
+      extra-paths: |
+        /var/www/myapp/uploads
+        /etc/myapp/config.yml
+
+      bucket:         ${{ vars.BACKUP_BUCKET }}
+      prefix:         postgres-daily/
+      retention-days: '30'
+
+      verify-after-upload: true
+
+    secrets:
+      R2_ACCOUNT_ID:        ${{ secrets.CF_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      SSH_PRIVATE_KEY:      ${{ secrets.SSH_PRIVATE_KEY }}
+      DB_PASSWORD:          ${{ secrets.PG_PASSWORD }}

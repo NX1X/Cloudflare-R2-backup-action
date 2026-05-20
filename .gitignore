@@ -1,0 +1,21 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
+*.tar.gz
+*.zip
+*.sql
+node_modules/
+.vscode/
+.idea/
+
+# Maintainer-only working notes, design scratchpads, internal runbooks.
+# Anything in this directory stays local - never published to the repo.
+docs-internal/
+
+# Claude Code working files (project instructions, session data, ignore lists).
+# Kept local so contributor-side AI assistance does not leak maintainer prompts.
+CLAUDE.md
+.claude/
+.claudeignore

@@ -1,0 +1,67 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    ":semanticPrefixChore",
+    ":maintainLockFilesDisabled",
+    "security:openssf-scorecard"
+  ],
+  "timezone": "UTC",
+  "schedule": ["after 6am and before 10am every day"],
+  "labels": ["dependencies"],
+
+  "minimumReleaseAge": "3 days",
+  "internalChecksFilter": "strict",
+  "configMigration": true,
+
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+  "rebaseWhen": "behind-base-branch",
+
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "minimumReleaseAge": "0 days",
+    "schedule": ["at any time"],
+    "labels": ["security", "dependencies"],
+    "prCreation": "immediate"
+  },
+  "osvVulnerabilityAlerts": true,
+
+  "packageRules": [
+    {
+      "description": "Group GitHub Actions updates so we get one PR per cycle, not N.",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions",
+      "addLabels": ["github-actions"]
+    },
+    {
+      "description": "Pinned shell tools (actionlint, etc.) via custom regex managers.",
+      "matchManagers": ["custom.regex"],
+      "groupName": "pinned-tools",
+      "addLabels": ["tools"]
+    },
+    {
+      "description": "Major version bumps for any third-party action get a 7-day cooldown (catches early-release regressions).",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["major"],
+      "minimumReleaseAge": "7 days",
+      "addLabels": ["major-update"]
+    }
+  ],
+
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track the actionlint version pinned in release.yml.",
+      "managerFilePatterns": ["/^\\.github/workflows/release\\.yml$/"],
+      "matchStrings": [
+        "ACTIONLINT_VERSION=\"(?<currentValue>[0-9.]+)\""
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "rhysd/actionlint",
+      "extractVersionTemplate": "^v(?<version>.+)$"
+    }
+  ]
+}

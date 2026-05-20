@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint & Validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install actionlint
+        run: |
+          ACTIONLINT_VERSION="1.7.7"
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" -o /tmp/actionlint.tar.gz
+          tar xzf /tmp/actionlint.tar.gz -C /tmp
+          sudo mv /tmp/actionlint /usr/local/bin/
+
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Run actionlint
+        run: actionlint
+
+      - name: Run shellcheck on scripts and templates
+        run: |
+          find scripts templates -type f -name '*.sh' -print0 \
+            | xargs -0 shellcheck --severity=warning --external-sources
+
+      - name: Validate action.yml structure
+        run: |
+          echo "=== Checking required files ==="
+          for f in action.yml README.md LICENSE CHANGELOG.md; do
+            if [ -f "$f" ]; then
+              echo "  ok $f"
+            else
+              echo "  MISSING $f"
+              exit 1
+            fi
+          done
+
+          echo ""
+          echo "=== Checking action.yml has required fields ==="
+          failed=0
+          for field in name description author runs; do
+            if grep -q "^${field}:" action.yml; then
+              echo "  ok ${field}"
+            else
+              echo "  MISSING ${field}"
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then exit 1; fi
+
+          echo ""
+          echo "=== Checking required scripts ==="
+          for f in scripts/run.sh scripts/upload.sh scripts/prune.sh scripts/verify.sh scripts/list.sh scripts/lib/common.sh scripts/lib/r2-config.sh; do
+            if [ -f "$f" ]; then
+              echo "  ok $f"
+            else
+              echo "  MISSING $f"
+              exit 1
+            fi
+          done
+
+          echo ""
+          echo "=== Checking DB templates ==="
+          for f in templates/mysql.sh templates/postgres.sh templates/mongodb.sh templates/sqlite.sh; do
+            if [ -f "$f" ]; then
+              echo "  ok $f"
+            else
+              echo "  MISSING $f"
+              exit 1
+            fi
+          done
+
+          echo ""
+          echo "=== Checking reusable workflow ==="
+          [ -f .github/workflows/backup.yml ] || { echo "  MISSING .github/workflows/backup.yml"; exit 1; }
+          echo "  ok .github/workflows/backup.yml"
+
+          echo ""
+          echo "All checks passed."

@@ -1,0 +1,149 @@
+name: Test Action
+
+# =============================================================================
+# Manual smoke-test for Cloudflare-R2-backup-action.
+# Requires a real R2 bucket and credentials.
+#
+# Required secrets (set in repository settings):
+#   CF_ACCOUNT_ID            - Cloudflare account ID
+#   R2_ACCESS_KEY_ID         - R2 API access key ID
+#   R2_SECRET_ACCESS_KEY     - R2 API secret access key
+#   TEST_BUCKET              - R2 bucket to write to (objects under test-runs/ prefix)
+#
+# What this workflow does:
+#   1. Creates a small temp file
+#   2. Uploads it to TEST_BUCKET under test-runs/<run-id>/
+#   3. Lists the prefix and asserts the object is there
+#   4. Verifies the object's tar integrity (will fail since the file is text -
+#      so we test the failure path too)
+#   5. Verifies via sha256 with a known checksum (success path)
+#   6. Prunes everything under test-runs/<run-id>/ via retention-count=0
+# =============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      cleanup:
+        description: 'Delete test objects after the run'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-test:
+    name: Smoke test against real R2
+    runs-on: ubuntu-latest
+    environment: prod
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Prepare test artifact
+        id: artifact
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/r2-smoke
+          # A real tar.gz so verify-mode: tar succeeds
+          echo "smoke-test payload $(date -u +%Y%m%dT%H%M%SZ)" > /tmp/r2-smoke/payload.txt
+          tar -czf /tmp/r2-smoke/test.tar.gz -C /tmp/r2-smoke payload.txt
+          SHA=$(sha256sum /tmp/r2-smoke/test.tar.gz | awk '{print $1}')
+          PREFIX="test-runs/${{ github.run_id }}/"
+          {
+            echo "file=/tmp/r2-smoke/test.tar.gz"
+            echo "sha=$SHA"
+            echo "prefix=$PREFIX"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload to R2
+        id: upload
+        uses: ./
+        with:
+          operation:         upload
+          account-id:        ${{ secrets.CF_ACCOUNT_ID }}
+          access-key-id:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          bucket:            ${{ secrets.TEST_BUCKET }}
+          prefix:            ${{ steps.artifact.outputs.prefix }}
+          file:              ${{ steps.artifact.outputs.file }}
+
+      - name: Verify upload outputs
+        env:
+          KEY:  ${{ steps.upload.outputs.object-key }}
+          SIZE: ${{ steps.upload.outputs.size }}
+        run: |
+          [ -n "$KEY"  ] || { echo "FAIL: object-key empty"; exit 1; }
+          [ -n "$SIZE" ] || { echo "FAIL: size empty";       exit 1; }
+          [ "$SIZE" -gt 0 ] || { echo "FAIL: size is 0";     exit 1; }
+          echo "Uploaded key=$KEY size=$SIZE"
+
+      - name: List objects under prefix
+        id: list
+        uses: ./
+        with:
+          operation:         list
+          account-id:        ${{ secrets.CF_ACCOUNT_ID }}
+          access-key-id:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          bucket:            ${{ secrets.TEST_BUCKET }}
+          prefix:            ${{ steps.artifact.outputs.prefix }}
+
+      - name: Assert list returned the upload
+        env:
+          COUNT:   ${{ steps.list.outputs.count }}
+          OBJECTS: ${{ steps.list.outputs.objects }}
+          KEY:     ${{ steps.upload.outputs.object-key }}
+        run: |
+          [ "$COUNT" -ge 1 ] || { echo "FAIL: count is $COUNT, expected >= 1"; exit 1; }
+          echo "$OBJECTS" | grep -qF "$KEY" || { echo "FAIL: list output does not contain $KEY"; exit 1; }
+          echo "List OK ($COUNT objects)"
+
+      - name: Verify integrity (tar mode)
+        uses: ./
+        with:
+          operation:         verify
+          account-id:        ${{ secrets.CF_ACCOUNT_ID }}
+          access-key-id:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          bucket:            ${{ secrets.TEST_BUCKET }}
+          object-key:        ${{ steps.upload.outputs.object-key }}
+          verify-mode:       tar
+
+      - name: Verify integrity (sha256 mode)
+        uses: ./
+        with:
+          operation:         verify
+          account-id:        ${{ secrets.CF_ACCOUNT_ID }}
+          access-key-id:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          bucket:            ${{ secrets.TEST_BUCKET }}
+          object-key:        ${{ steps.upload.outputs.object-key }}
+          verify-mode:       sha256
+          verify-checksum:   ${{ steps.artifact.outputs.sha }}
+
+      - name: Prune test prefix
+        if: ${{ inputs.cleanup }}
+        id: prune
+        uses: ./
+        with:
+          operation:         prune
+          account-id:        ${{ secrets.CF_ACCOUNT_ID }}
+          access-key-id:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          bucket:            ${{ secrets.TEST_BUCKET }}
+          prefix:            ${{ steps.artifact.outputs.prefix }}
+          retention-count:   '0'
+
+      - name: Assert prune deleted at least one object
+        if: ${{ inputs.cleanup }}
+        env:
+          PRUNED: ${{ steps.prune.outputs.pruned-count }}
+        run: |
+          [ "$PRUNED" -ge 1 ] || { echo "FAIL: pruned-count is $PRUNED, expected >= 1"; exit 1; }
+          echo "Prune OK ($PRUNED objects deleted)"
+
+      - name: Summary
+        run: echo "Smoke test passed"

@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Mock `aws` CLI for unit tests. Records every invocation and returns
+# canned responses controlled by environment variables:
+#
+#   R2_MOCK_LOG          - file to append each call's argv to (one line per call)
+#   R2_MOCK_SIZE         - value returned for `s3api head-object --query ContentLength`
+#   R2_MOCK_LISTING_TEXT - file whose contents are echoed for `--query 'Contents[].[LastModified,Key]' --output text`
+#   R2_MOCK_LISTING_JSON - file whose contents are echoed for `--query 'Contents[].{...}' --output json`
+#   R2_MOCK_COUNT        - value for `length(Contents...)` queries
+#   R2_MOCK_TOTAL_SIZE   - value for `sum(Contents...)` queries
+#   R2_MOCK_FAIL         - comma-separated subcommands that should exit 1 (e.g. "s3:cp")
+
+set -euo pipefail
+
+LOG="${R2_MOCK_LOG:-/dev/null}"
+
+# Log the full command line.
+{ printf 'aws'; for a in "$@"; do printf ' %q' "$a"; done; printf '\n'; } >> "$LOG"
+
+# Helper: should this subcommand fail?
+should_fail() {
+  local key="$1"
+  case ",${R2_MOCK_FAIL:-}," in
+    *",${key},"*) return 0 ;;
+    *)            return 1 ;;
+  esac
+}
+
+# Find argument value (returns the value AFTER the matching flag).
+arg_after() {
+  local target="$1"; shift
+  while [ $# -gt 0 ]; do
+    if [ "$1" = "$target" ]; then
+      printf '%s' "${2:-}"
+      return 0
+    fi
+    shift
+  done
+  return 1
+}
+
+# Subcommand: $1 $2 (e.g. "s3 cp", "s3api head-object")
+SUB="${1:-} ${2:-}"
+
+case "$SUB" in
+  "s3 cp")
+    if should_fail "s3:cp"; then exit 1; fi
+    SRC="$3"
+    DST="$4"
+    # Priority: R2_MOCK_DOWNLOAD_FROM (for verify tests that need real archive content),
+    #           then real SRC file (for upload tests),
+    #           then fallback placeholder.
+    if [ -n "${R2_MOCK_DOWNLOAD_FROM:-}" ] && [ -f "${R2_MOCK_DOWNLOAD_FROM}" ]; then
+      cp "${R2_MOCK_DOWNLOAD_FROM}" "$DST"
+    elif [ -f "$SRC" ]; then
+      cp "$SRC" "$DST" 2>/dev/null || true
+    else
+      printf 'mock-r2-content' > "$DST"
+    fi
+    exit 0
+    ;;
+
+  "s3api head-object")
+    if should_fail "s3api:head-object"; then exit 1; fi
+    printf '%s\n' "${R2_MOCK_SIZE:-0}"
+    exit 0
+    ;;
+
+  "s3api list-objects-v2")
+    if should_fail "s3api:list-objects-v2"; then exit 1; fi
+    QUERY=$(arg_after --query "$@" || true)
+    OUT_FORMAT=$(arg_after --output "$@" || echo "json")
+    case "$QUERY" in
+      *"length(Contents"*)
+        printf '%s\n' "${R2_MOCK_COUNT:-0}"
+        ;;
+      *"sum(Contents"*)
+        printf '%s\n' "${R2_MOCK_TOTAL_SIZE:-0}"
+        ;;
+      *"LastModified,Key"*)
+        if [ -n "${R2_MOCK_LISTING_TEXT:-}" ] && [ -f "${R2_MOCK_LISTING_TEXT}" ]; then
+          cat "${R2_MOCK_LISTING_TEXT}"
+        fi
+        ;;
+      *"key: Key, size: Size"*|*"{key:"*)
+        if [ "$OUT_FORMAT" = "json" ] && [ -n "${R2_MOCK_LISTING_JSON:-}" ] && [ -f "${R2_MOCK_LISTING_JSON}" ]; then
+          cat "${R2_MOCK_LISTING_JSON}"
+        elif [ "$OUT_FORMAT" = "json" ]; then
+          printf 'null\n'
+        fi
+        ;;
+      *)
+        # Fallback empty
+        if [ "$OUT_FORMAT" = "json" ]; then printf 'null\n'; fi
+        ;;
+    esac
+    exit 0
+    ;;
+
+  "s3api delete-object")
+    if should_fail "s3api:delete-object"; then exit 1; fi
+    # Output is normally the version-id JSON; tests don't read stdout.
+    printf '{}\n'
+    exit 0
+    ;;
+
+  *)
+    printf 'mock aws: unhandled subcommand: %s\n' "$SUB" >&2
+    exit 2
+    ;;
+esac

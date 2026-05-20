@@ -1,0 +1,54 @@
+name: "CodeQL Advanced"
+
+# Static analysis for GitHub Actions workflows (the primary attack surface
+# in a composite shell action). Detects untrusted input flow, script
+# injection, and other patterns flagged by CodeQL's `actions` queries.
+#
+# Why no `shell` analysis: CodeQL does not natively analyze bash/sh.
+# `actionlint` + `shellcheck` (in ci.yml) cover that surface.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly Monday 05:30 UTC - re-scan even when no code changes, so we
+    # pick up new CodeQL queries / vulnerability data without a push.
+    - cron: "30 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          queries: security-and-quality
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

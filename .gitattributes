@@ -1,0 +1,23 @@
+# Normalize line endings. Shell scripts MUST be LF or bash on Linux CI fails
+# with "/bin/bash^M: bad interpreter" or "$'\r': command not found" errors.
+
+* text=auto eol=lf
+
+# Explicitly LF for everything that runs on Linux runners.
+*.sh    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+
+# Files without an extension that are shell scripts (mocks, etc.)
+test/mocks/aws  text eol=lf
+test/mocks/curl text eol=lf
+
+# Binary blobs - never touch.
+*.png   binary
+*.jpg   binary
+*.gif   binary
+*.ico   binary
+*.zip   binary
+*.tar.gz binary

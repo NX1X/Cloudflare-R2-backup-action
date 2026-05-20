@@ -1,0 +1,78 @@
+name: Backup remote server to R2 (Cloudflare Tunnel SSH source)
+
+# Example: SSH to a server behind a Cloudflare Tunnel (no public IP needed),
+# dump a MariaDB instance running in docker compose, archive it together with
+# a data directory, and upload to R2.
+#
+# Replaces the duplicated cloudflared+SSH boilerplate from per-app backup
+# workflows with a single 30-line caller.
+#
+# Required secrets:
+#   CF_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY  - R2 sink
+#   CF_ACCESS_CLIENT_ID, CF_ACCESS_CLIENT_SECRET           - Cloudflare Access service token
+#   SSH_PRIVATE_KEY                                        - Public key on server's authorized_keys
+#   DATABASE_ROOT_PASSWORD                                 - Used inside backup-script
+#
+# Required vars (or hardcoded values):
+#   TUNNEL_HOSTNAME, SSH_USER, BACKUP_BUCKET, APP_DIR
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # 02:00 UTC daily
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual backup'
+        required: false
+        default: 'manual'
+
+jobs:
+  backup:
+    uses: NX1X/Cloudflare-R2-backup-action/.github/workflows/backup.yml@v1
+    with:
+      source-mode: tunnel-ssh
+      ssh-host:    ${{ vars.TUNNEL_HOSTNAME }}
+      ssh-user:    ${{ vars.SSH_USER }}
+
+      backup-script: |
+        set -euo pipefail
+        TIMESTAMP=$(date -u +%Y%m%d_%H%M%S)
+        ARCHIVE="$HOME/backups/${TIMESTAMP}.tar.gz"
+        STAGING="$HOME/backups/upload"
+        APP_DIR="${{ vars.APP_DIR }}"
+
+        mkdir -p "$STAGING" "$HOME/backups"
+
+        echo "Dumping MariaDB..." >&2
+        cd "$APP_DIR"
+        DB_PASS=$(grep -E '^DATABASE_ROOT_PASSWORD=' .env | head -1 | cut -d= -f2-)
+        docker compose exec -T -e MYSQL_PWD="$DB_PASS" db mariadb-dump \
+          -u root --single-transaction --quick --lock-tables=false \
+          --default-character-set=utf8mb4 --all-databases \
+          > "$STAGING/database.sql"
+
+        echo "Creating archive..." >&2
+        tar -czf "$ARCHIVE" \
+          -C "$STAGING" database.sql \
+          -C "$APP_DIR/data" .
+        rm -rf "$STAGING"
+
+        # Last stdout line = absolute path on the remote server
+        echo "$ARCHIVE"
+
+      bucket:           ${{ vars.BACKUP_BUCKET }}
+      prefix:           daily-backups/
+      retention-days:   '90'
+
+      verify-after-upload: true
+      verify-mode:         tar
+
+      cleanup-source: true   # remove archive from server after upload
+
+    secrets:
+      R2_ACCOUNT_ID:           ${{ secrets.CF_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID:        ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY:    ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      CF_ACCESS_CLIENT_ID:     ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+      SSH_PRIVATE_KEY:         ${{ secrets.SSH_PRIVATE_KEY }}

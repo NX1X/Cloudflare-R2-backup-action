@@ -1,0 +1,114 @@
+name: 'Cloudflare R2 Backup'
+description: 'Upload, verify, list, and prune backups in Cloudflare R2 from GitHub Actions. Zero telemetry, AWS CLI under the hood.'
+author: 'NX1X'
+
+branding:
+  icon: 'cloud-snow'
+  color: 'orange'
+
+inputs:
+  operation:
+    description: 'Operation to run: upload | verify | list | prune'
+    required: true
+
+  account-id:
+    description: 'Cloudflare account ID. Used to derive the R2 endpoint unless endpoint-url is set.'
+    required: true
+  access-key-id:
+    description: 'R2 API access key ID'
+    required: true
+  secret-access-key:
+    description: 'R2 API secret access key'
+    required: true
+  bucket:
+    description: 'R2 bucket name'
+    required: true
+
+  prefix:
+    description: 'Path prefix inside the bucket (e.g. "daily-backups/"). Used by upload, list, and prune.'
+    required: false
+    default: ''
+
+  file:
+    description: 'Local file path. Required for upload. Used as a download target for verify.'
+    required: false
+    default: ''
+  object-key:
+    description: 'Explicit object key. For upload, defaults to prefix + basename(file). For verify, required.'
+    required: false
+    default: ''
+
+  retention-days:
+    description: 'Delete objects under prefix older than N days. Empty disables age-based prune.'
+    required: false
+    default: ''
+  retention-count:
+    description: 'Keep only the newest N objects under prefix. Empty disables count-based prune.'
+    required: false
+    default: ''
+
+  verify-mode:
+    description: 'Integrity check (verify op): tar | zip | sha256.'
+    required: false
+    default: ''
+  verify-checksum:
+    description: 'Expected sha256 hex digest (required when verify-mode=sha256).'
+    required: false
+    default: ''
+
+  max-keys:
+    description: 'Maximum number of objects to return (list op).'
+    required: false
+    default: ''
+
+  endpoint-url:
+    description: 'Override the R2 endpoint URL. Default: https://<account-id>.r2.cloudflarestorage.com'
+    required: false
+    default: ''
+
+outputs:
+  object-key:
+    description: 'Full object key written to or verified in R2.'
+    value: ${{ steps.run.outputs.object-key }}
+  size:
+    description: 'Size in bytes of the uploaded or verified object.'
+    value: ${{ steps.run.outputs.size }}
+  pruned-count:
+    description: 'Number of objects deleted by retention.'
+    value: ${{ steps.run.outputs.pruned-count }}
+  verified:
+    description: 'true if integrity check passed (verify op).'
+    value: ${{ steps.run.outputs.verified }}
+  objects:
+    description: 'JSON array of objects under prefix (list op).'
+    value: ${{ steps.run.outputs.objects }}
+  count:
+    description: 'Number of objects returned by list op.'
+    value: ${{ steps.run.outputs.count }}
+  total-size:
+    description: 'Total size in bytes of objects returned by list op.'
+    value: ${{ steps.run.outputs.total-size }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run R2 ${{ inputs.operation }}
+      id: run
+      shell: bash
+      env:
+        OPERATION:             ${{ inputs.operation }}
+        CF_ACCOUNT_ID:         ${{ inputs.account-id }}
+        AWS_ACCESS_KEY_ID:     ${{ inputs.access-key-id }}
+        AWS_SECRET_ACCESS_KEY: ${{ inputs.secret-access-key }}
+        AWS_DEFAULT_REGION:    'auto'
+        R2_BUCKET:             ${{ inputs.bucket }}
+        R2_PREFIX:             ${{ inputs.prefix }}
+        R2_FILE:               ${{ inputs.file }}
+        R2_OBJECT_KEY:         ${{ inputs.object-key }}
+        R2_RETENTION_DAYS:     ${{ inputs.retention-days }}
+        R2_RETENTION_COUNT:    ${{ inputs.retention-count }}
+        R2_VERIFY_MODE:        ${{ inputs.verify-mode }}
+        R2_VERIFY_CHECKSUM:    ${{ inputs.verify-checksum }}
+        R2_MAX_KEYS:           ${{ inputs.max-keys }}
+        R2_ENDPOINT_URL:       ${{ inputs.endpoint-url }}
+      run: bash "${GITHUB_ACTION_PATH}/scripts/run.sh"

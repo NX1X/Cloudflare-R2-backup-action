@@ -1,0 +1,67 @@
+name: Backup remote server to R2 (SSH source)
+
+# Example: SSH to a remote server, dump a Postgres DB and tar a data directory,
+# upload the archive to R2, then delete the temp file from the server.
+#
+# Required secrets:
+#   CF_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
+#   SSH_PRIVATE_KEY      - matching public key in ~/.ssh/authorized_keys on server
+#   SSH_KNOWN_HOSTS      - output of `ssh-keyscan host` (recommended)
+#   DB_PASSWORD          - Postgres password (used inside backup-script)
+#
+# Required vars (or hardcoded values):
+#   SSH_HOST, SSH_USER, BACKUP_BUCKET
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # 02:00 UTC daily
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual backup'
+        required: false
+        default: 'manual'
+
+jobs:
+  backup:
+    uses: NX1X/Cloudflare-R2-backup-action/.github/workflows/backup.yml@v1
+    with:
+      source-mode: ssh
+      ssh-host:    ${{ vars.SSH_HOST }}
+      ssh-user:    ${{ vars.SSH_USER }}
+      ssh-port:    '22'
+      ssh-known-hosts: ${{ secrets.SSH_KNOWN_HOSTS }}
+
+      backup-script: |
+        set -euo pipefail
+        TIMESTAMP=$(date -u +%Y%m%d_%H%M%S)
+        ARCHIVE="$HOME/backups/server_backup_${TIMESTAMP}.tar.gz"
+        mkdir -p "$HOME/backups"
+
+        echo "Dumping Postgres..." >&2
+        PGPASSWORD='${{ secrets.DB_PASSWORD }}' \
+          pg_dumpall -h localhost -U postgres > /tmp/db.sql
+
+        echo "Creating archive..." >&2
+        tar -czf "$ARCHIVE" \
+          -C /tmp db.sql \
+          -C "$HOME/myapp" data
+        rm -f /tmp/db.sql
+
+        # Last stdout line = absolute path to archive on the remote server.
+        echo "$ARCHIVE"
+
+      bucket:           ${{ vars.BACKUP_BUCKET }}
+      prefix:           daily-backups/
+      retention-days:   '90'
+
+      verify-after-upload: true
+      verify-mode:         tar
+
+      cleanup-source: true   # remove archive from server after upload
+
+    secrets:
+      R2_ACCOUNT_ID:        ${{ secrets.CF_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      SSH_PRIVATE_KEY:      ${{ secrets.SSH_PRIVATE_KEY }}
