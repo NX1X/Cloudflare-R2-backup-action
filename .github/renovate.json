@@ -9,7 +9,7 @@
     "security:openssf-scorecard"
   ],
   "timezone": "UTC",
-  "schedule": ["after 6am and before 10am every day"],
+  "schedule": ["after 6am and before 10am"],
   "labels": ["dependencies"],
 
   "minimumReleaseAge": "3 days",
