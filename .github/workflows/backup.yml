@@ -310,7 +310,7 @@ jobs:
 
       - name: Fetch templates (db-template mode)
         if: inputs.db-template != ''
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: NX1X/Cloudflare-R2-backup-action
           ref: v1
@@ -479,7 +479,7 @@ jobs:
 
     steps:
       - name: Fetch notify script
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: NX1X/Cloudflare-R2-backup-action
           ref: v1
